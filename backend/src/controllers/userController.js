@@ -81,7 +81,7 @@ exports.getPublicProfile = async (req, res) => {
 
     const { data: profile, error } = await supabase
       .from('user_profiles')
-      .select('*, user:users(*, event_types(*))')
+      .select('*, user:users(*, event_types(*), integrations(*))')
       .eq('username', username)
       .maybeSingle();
 
@@ -91,24 +91,52 @@ exports.getPublicProfile = async (req, res) => {
 
     // Reshape object to match expected Prisma output
     if (profile.user) {
+      const parsePaymentConfig = (desc) => {
+        if (!desc) return { cleanDescription: '', requiresPayment: false, price: 0, currency: 'INR' };
+        const marker = '\n\n---PAYMENT_METADATA---\n';
+        const idx = desc.indexOf(marker);
+        if (idx === -1) {
+          return { cleanDescription: desc, requiresPayment: false, price: 0, currency: 'INR' };
+        }
+        const cleanDescription = desc.substring(0, idx);
+        try {
+          const meta = JSON.parse(desc.substring(idx + marker.length));
+          return {
+            cleanDescription,
+            requiresPayment: !!meta.requiresPayment,
+            price: parseFloat(meta.price) || 0,
+            currency: meta.currency || 'INR'
+          };
+        } catch (e) {
+          return { cleanDescription, requiresPayment: false, price: 0, currency: 'INR' };
+        }
+      };
+
       const activeEventTypes = (profile.user.event_types || [])
         .filter(et => et.isActive)
-        .map(et => ({
-          id: et.id,
-          title: et.title,
-          slug: et.slug,
-          description: et.description,
-          duration: et.duration,
-          location: et.location,
-          color: et.color
-        }));
+        .map(et => {
+          const { cleanDescription, requiresPayment, price, currency } = parsePaymentConfig(et.description);
+          return {
+            id: et.id,
+            title: et.title,
+            slug: et.slug,
+            description: cleanDescription,
+            duration: et.duration,
+            location: et.location,
+            color: et.color,
+            requiresPayment,
+            price,
+            currency
+          };
+        });
 
       profile.user = {
         id: profile.user.id,
         name: profile.user.name,
         email: profile.user.email,
         avatar: profile.user.avatar,
-        eventTypes: activeEventTypes
+        eventTypes: activeEventTypes,
+        integrations: profile.user.integrations || []
       };
     }
 

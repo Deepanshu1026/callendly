@@ -176,6 +176,54 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
             throw new Error('User object was not created or loaded successfully');
           }
 
+          // Automatically connect/update Google Calendar credentials
+          if (accessToken) {
+            console.log('Google OAuth: Upserting calendar connection for user:', user.id);
+            try {
+              const { data: existingCal } = await supabase
+                .from('calendars')
+                .select('id')
+                .eq('userId', user.id)
+                .eq('provider', 'google')
+                .maybeSingle();
+
+              if (existingCal) {
+                const updateCalData = {
+                  accessToken,
+                  updatedAt: new Date().toISOString()
+                };
+                if (refreshToken) {
+                  updateCalData.refreshToken = refreshToken;
+                }
+                await supabase
+                  .from('calendars')
+                  .update(updateCalData)
+                  .eq('id', existingCal.id);
+                console.log('Google OAuth: Updated existing calendar connection:', existingCal.id);
+              } else {
+                const insertCalData = {
+                  id: require('crypto').randomUUID(),
+                  userId: user.id,
+                  provider: 'google',
+                  name: 'Primary Google Calendar',
+                  externalId: profile.id,
+                  accessToken,
+                  isPrimary: true,
+                  updatedAt: new Date().toISOString()
+                };
+                if (refreshToken) {
+                  insertCalData.refreshToken = refreshToken;
+                }
+                await supabase
+                  .from('calendars')
+                  .insert(insertCalData);
+                console.log('Google OAuth: Created new calendar connection');
+              }
+            } catch (calError) {
+              console.error('Google OAuth: Failed to connect/update calendar connection:', calError);
+            }
+          }
+
           const token = generateToken({ userId: user.id, email: user.email });
           console.log('Google OAuth: Successful login/registration, generating token...');
           return done(null, { user, token });

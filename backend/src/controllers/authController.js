@@ -1,5 +1,6 @@
 const bcrypt = require('bcryptjs');
 const { validationResult } = require('express-validator');
+const { logAudit } = require('../utils/audit');
 const supabase = require('../config/database');
 const { generateToken } = require('../utils/jwt');
 
@@ -74,6 +75,9 @@ exports.register = async (req, res) => {
         { id: require('crypto').randomUUID(), userId: user.id, dayOfWeek: 5, startTime: '09:00', endTime: '17:00', isActive: true, updatedAt: new Date().toISOString() }
       ]);
 
+    // Trigger audit log
+    logAudit({ userId: user.id, action: 'user.register', entityType: 'users', entityId: user.id, req });
+
     const token = generateToken({ userId: user.id, email: user.email });
 
     res.status(201).json({
@@ -120,6 +124,9 @@ exports.login = async (req, res) => {
     } else {
       user.profile = null;
     }
+
+    // Trigger audit log
+    logAudit({ userId: user.id, action: 'user.login', entityType: 'users', entityId: user.id, req });
 
     const token = generateToken({ userId: user.id, email: user.email });
 

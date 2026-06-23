@@ -1,4 +1,34 @@
 const supabase = require('../config/database');
+const { logAudit } = require('../utils/audit');
+
+const parsePaymentConfig = (desc) => {
+  if (!desc) return { cleanDescription: '', requiresPayment: false, price: 0, currency: 'INR' };
+  const marker = '\n\n---PAYMENT_METADATA---\n';
+  const idx = desc.indexOf(marker);
+  if (idx === -1) {
+    return { cleanDescription: desc, requiresPayment: false, price: 0, currency: 'INR' };
+  }
+  const cleanDescription = desc.substring(0, idx);
+  try {
+    const meta = JSON.parse(desc.substring(idx + marker.length));
+    return {
+      cleanDescription,
+      requiresPayment: !!meta.requiresPayment,
+      price: parseFloat(meta.price) || 0,
+      currency: meta.currency || 'INR'
+    };
+  } catch (e) {
+    return { cleanDescription, requiresPayment: false, price: 0, currency: 'INR' };
+  }
+};
+
+const serializePaymentConfig = (cleanDesc, requiresPayment, price, currency) => {
+  const marker = '\n\n---PAYMENT_METADATA---\n';
+  if (!requiresPayment) return cleanDesc || '';
+  const meta = { requiresPayment: true, price: parseFloat(price) || 0, currency: currency || 'INR' };
+  return `${cleanDesc || ''}${marker}${JSON.stringify(meta)}`;
+};
+
 
 exports.getEventTypes = async (req, res) => {
   try {
@@ -14,6 +44,12 @@ exports.getEventTypes = async (req, res) => {
       eventTypes.forEach(et => {
         et.questions = (et.booking_questions || []).sort((a, b) => a.order - b.order);
         delete et.booking_questions;
+
+        const { cleanDescription, requiresPayment, price, currency } = parsePaymentConfig(et.description);
+        et.description = cleanDescription;
+        et.requiresPayment = requiresPayment;
+        et.price = price;
+        et.currency = currency;
       });
     }
 
@@ -26,7 +62,7 @@ exports.getEventTypes = async (req, res) => {
 
 exports.createEventType = async (req, res) => {
   try {
-    const { title, slug, description, duration, location, color, bufferBefore, bufferAfter, minimumNotice } = req.body;
+    const { title, slug, description, duration, location, color, bufferBefore, bufferAfter, minimumNotice, requiresPayment, price, currency } = req.body;
 
     const { data: existing } = await supabase
       .from('event_types')
@@ -39,6 +75,8 @@ exports.createEventType = async (req, res) => {
       return res.status(400).json({ error: 'Event type with this slug already exists' });
     }
 
+    const serializedDescription = serializePaymentConfig(description, requiresPayment, price, currency);
+
     const { data: eventType, error } = await supabase
       .from('event_types')
       .insert({
@@ -46,7 +84,7 @@ exports.createEventType = async (req, res) => {
         userId: req.user.id,
         title,
         slug,
-        description,
+        description: serializedDescription,
         duration: parseInt(duration),
         location,
         color,
@@ -60,6 +98,8 @@ exports.createEventType = async (req, res) => {
 
     if (error) throw error;
 
+    logAudit({ userId: req.user.id, action: 'event_type.create', entityType: 'event_types', entityId: eventType.id, req });
+
     res.status(201).json({ eventType });
   } catch (error) {
     console.error('Create event type error:', error);
@@ -70,13 +110,31 @@ exports.createEventType = async (req, res) => {
 exports.updateEventType = async (req, res) => {
   try {
     const { id } = req.params;
-    const { title, description, duration, location, color, isActive, bufferBefore, bufferAfter, minimumNotice } = req.body;
+    const { title, description, duration, location, color, isActive, bufferBefore, bufferAfter, minimumNotice, requiresPayment, price, currency } = req.body;
+
+    let finalDescription = undefined;
+    if (description !== undefined || requiresPayment !== undefined || price !== undefined || currency !== undefined) {
+      const { data: existing } = await supabase
+        .from('event_types')
+        .select('description')
+        .eq('id', id)
+        .eq('userId', req.user.id)
+        .maybeSingle();
+
+      const currentMeta = parsePaymentConfig(existing ? existing.description : '');
+      const newCleanDesc = description !== undefined ? description : currentMeta.cleanDescription;
+      const newReqPayment = requiresPayment !== undefined ? requiresPayment : currentMeta.requiresPayment;
+      const newPrice = price !== undefined ? price : currentMeta.price;
+      const newCurrency = currency !== undefined ? currency : currentMeta.currency;
+
+      finalDescription = serializePaymentConfig(newCleanDesc, newReqPayment, newPrice, newCurrency);
+    }
 
     const updateData = {
       updatedAt: new Date().toISOString()
     };
     if (title !== undefined) updateData.title = title;
-    if (description !== undefined) updateData.description = description;
+    if (finalDescription !== undefined) updateData.description = finalDescription;
     if (duration !== undefined) updateData.duration = duration ? parseInt(duration) : undefined;
     if (location !== undefined) updateData.location = location;
     if (color !== undefined) updateData.color = color;
@@ -94,7 +152,18 @@ exports.updateEventType = async (req, res) => {
 
     if (error) throw error;
 
-    res.json({ eventType: updatedList && updatedList.length > 0 ? updatedList[0] : null });
+    const updatedEventType = updatedList && updatedList.length > 0 ? updatedList[0] : null;
+    if (updatedEventType) {
+      const { cleanDescription, requiresPayment: rp, price: pr, currency: cr } = parsePaymentConfig(updatedEventType.description);
+      updatedEventType.description = cleanDescription;
+      updatedEventType.requiresPayment = rp;
+      updatedEventType.price = pr;
+      updatedEventType.currency = cr;
+    }
+
+    logAudit({ userId: req.user.id, action: 'event_type.update', entityType: 'event_types', entityId: id, req });
+
+    res.json({ eventType: updatedEventType });
   } catch (error) {
     console.error('Update event type error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -111,6 +180,8 @@ exports.deleteEventType = async (req, res) => {
       .eq('userId', req.user.id);
 
     if (error) throw error;
+    logAudit({ userId: req.user.id, action: 'event_type.delete', entityType: 'event_types', entityId: id, req });
+
     res.json({ message: 'Event type deleted' });
   } catch (error) {
     console.error('Delete event type error:', error);
@@ -132,14 +203,15 @@ exports.getPublicEventType = async (req, res) => {
       return res.status(404).json({ error: 'Event type not found' });
     }
 
-    const matchedEventTypes = (profile.user.event_types || []).filter(et => et.slug === slug && et.isActive);
-    if (matchedEventTypes.length === 0) {
-      return res.status(404).json({ error: 'Event type not found' });
-    }
-
     const eventType = matchedEventTypes[0];
     eventType.questions = (eventType.booking_questions || []).sort((a, b) => a.order - b.order);
     delete eventType.booking_questions;
+
+    const { cleanDescription, requiresPayment, price, currency } = parsePaymentConfig(eventType.description);
+    eventType.description = cleanDescription;
+    eventType.requiresPayment = requiresPayment;
+    eventType.price = price;
+    eventType.currency = currency;
 
     const host = {
       id: profile.user.id,
@@ -152,3 +224,76 @@ exports.getPublicEventType = async (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 };
+
+exports.createQuestion = async (req, res) => {
+  try {
+    const { eventTypeId } = req.params;
+    const { label, type, required, options, order } = req.body;
+
+    const { data: question, error } = await supabase
+      .from('booking_questions')
+      .insert({
+        id: require('crypto').randomUUID(),
+        eventTypeId,
+        label,
+        type: type || 'text',
+        required: required || false,
+        options: options || '',
+        order: order || 0,
+        updatedAt: new Date().toISOString()
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.status(201).json({ question });
+  } catch (error) {
+    console.error('Create question error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+exports.updateQuestion = async (req, res) => {
+  try {
+    const { questionId } = req.params;
+    const { label, type, required, options, order } = req.body;
+
+    const { data: question, error } = await supabase
+      .from('booking_questions')
+      .update({
+        label,
+        type,
+        required,
+        options,
+        order,
+        updatedAt: new Date().toISOString()
+      })
+      .eq('id', questionId)
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.json({ question });
+  } catch (error) {
+    console.error('Update question error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+exports.deleteQuestion = async (req, res) => {
+  try {
+    const { questionId } = req.params;
+
+    const { error } = await supabase
+      .from('booking_questions')
+      .delete()
+      .eq('id', questionId);
+
+    if (error) throw error;
+    res.json({ message: 'Question deleted' });
+  } catch (error) {
+    console.error('Delete question error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+

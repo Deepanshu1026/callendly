@@ -148,30 +148,42 @@ export default function DashboardPage() {
               </p>
             )}
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Link
               href="/dashboard/calendar"
-              className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium hover:bg-gray-50"
+              className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium hover:bg-gray-50"
             >
               Calendar View
             </Link>
             <Link
               href="/dashboard/availability"
-              className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium hover:bg-gray-50"
+              className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium hover:bg-gray-50"
             >
               Availability
             </Link>
             <Link
               href="/dashboard/event-types"
-              className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium hover:bg-gray-50"
+              className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium hover:bg-gray-50"
             >
               Event Types
             </Link>
             <Link
-              href="/dashboard/calendars"
-              className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium hover:bg-gray-50"
+              href="/dashboard/teams"
+              className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium hover:bg-gray-50"
             >
-              Calendars
+              Teams
+            </Link>
+            <Link
+              href="/dashboard/integrations"
+              className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium hover:bg-gray-50"
+            >
+              Integrations
+            </Link>
+            <Link
+              href="/dashboard/analytics"
+              className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium hover:bg-gray-50"
+            >
+              Analytics
             </Link>
           </div>
         </div>

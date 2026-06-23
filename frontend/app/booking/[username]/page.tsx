@@ -6,9 +6,13 @@ import { useParams } from 'next/navigation';
 import { api } from '@/lib/api';
 import { format, addDays, startOfWeek, parseISO } from 'date-fns';
 
-interface Slot {
-  startTime: string;
-  endTime: string;
+interface Question {
+  id: string;
+  label: string;
+  type: string;
+  required: boolean;
+  options: string;
+  order: number;
 }
 
 interface EventType {
@@ -19,11 +23,20 @@ interface EventType {
   duration: number;
   location: string | null;
   color: string;
+  requiresPayment?: boolean;
+  price?: number;
+  currency?: string;
+  questions?: Question[];
 }
 
 interface Host {
   id: string;
   name: string | null;
+}
+
+interface Slot {
+  startTime: string;
+  endTime: string;
 }
 
 export default function BookingPage() {
@@ -47,6 +60,17 @@ export default function BookingPage() {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [bookingLoading, setBookingLoading] = useState(false);
 
+  // Load Razorpay script dynamically
+  useEffect(() => {
+    const script = document.createElement('script');
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    script.async = true;
+    document.body.appendChild(script);
+    return () => {
+      document.body.removeChild(script);
+    };
+  }, []);
+
   useEffect(() => {
     if (!username) return;
     api.get(`/users/${username}/public`)
@@ -63,27 +87,100 @@ export default function BookingPage() {
       .catch(() => setLoading(false));
   }, [username]);
 
+  // Fetch full details (questions & pricing) and slots
+  useEffect(() => {
+    if (!selectedEventType || !username) return;
+
+    // Fetch full public event type details
+    api.get(`/event-types/${username}/${selectedEventType.slug}/public`)
+      .then(res => {
+        setSelectedEventType(res.data.eventType);
+      })
+      .catch(err => console.error('Failed to load event type details:', err));
+  }, [username, selectedEventType?.slug]);
+
   useEffect(() => {
     if (!selectedEventType || !username) return;
     api.get(`/availability/${username}/${selectedEventType.slug}/slots?date=${selectedDate}`)
       .then(res => setSlots(res.data.slots))
       .catch(() => setSlots([]));
-  }, [username, selectedEventType, selectedDate]);
+  }, [username, selectedEventType?.slug, selectedDate]);
 
   const handleBooking = async () => {
     if (!selectedEventType || !selectedSlot) return;
     setBookingLoading(true);
     try {
-      await api.post(`/bookings/${username}/${selectedEventType.slug}`, {
+      // 1. Submit pending/confirmed booking
+      const res = await api.post(`/bookings/${username}/${selectedEventType.slug}`, {
         ...formData,
         startTime: selectedSlot.startTime,
         endTime: selectedSlot.endTime,
         answers
       });
-      setStep('confirmed');
+
+      const { booking, requiresPayment, price, currency } = res.data;
+
+      if (requiresPayment) {
+        // 2. Create Razorpay order
+        const orderRes = await api.post('/payments/create-order', {
+          bookingId: booking.id,
+          amount: price,
+          currency: currency || 'INR'
+        });
+
+        const { orderId, amount, currency: orderCurrency, keyId } = orderRes.data;
+
+        // 3. Open Razorpay modal checkout
+        const options = {
+          key: keyId,
+          amount: amount,
+          currency: orderCurrency,
+          name: 'Callendly Scheduling',
+          description: `${selectedEventType.title} with ${host?.name || username}`,
+          order_id: orderId,
+          handler: async function (response: any) {
+            try {
+              // 4. Verify payment with backend
+              const verifyRes = await api.post('/payments/verify', {
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_signature: response.razorpay_signature,
+                bookingId: booking.id
+              });
+              if (verifyRes.data.success) {
+                setStep('confirmed');
+              } else {
+                alert('Payment verification failed. Please contact support.');
+              }
+            } catch (err: any) {
+              alert(err.response?.data?.error || 'Verification failed');
+            } finally {
+              setBookingLoading(false);
+            }
+          },
+          prefill: {
+            name: formData.guestName,
+            email: formData.guestEmail,
+            contact: formData.guestPhone
+          },
+          theme: {
+            color: selectedEventType.color || '#3b82f6'
+          },
+          modal: {
+            ondismiss: function () {
+              setBookingLoading(false);
+            }
+          }
+        };
+
+        const rzp = new (window as any).Razorpay(options);
+        rzp.open();
+      } else {
+        setStep('confirmed');
+        setBookingLoading(false);
+      }
     } catch (err: any) {
       alert(err.response?.data?.error || 'Booking failed');
-    } finally {
       setBookingLoading(false);
     }
   };
@@ -170,6 +267,14 @@ export default function BookingPage() {
                     {selectedEventType.location}
                   </div>
                 )}
+                {selectedEventType.requiresPayment && selectedEventType.price && (
+                  <div className="flex items-center gap-2 font-semibold text-green-600">
+                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 8h6m-5 0a3 3 0 110 6H9l3 3m-3-6h6m6 1a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    Price: {selectedEventType.currency || 'INR'} {selectedEventType.price}
+                  </div>
+                )}
               </div>
             )}
             {selectedEventType?.description && (
@@ -197,7 +302,9 @@ export default function BookingPage() {
                   >
                     <div>
                       <p className="font-medium">{et.title}</p>
-                      <p className="text-sm text-gray-500">{et.duration} min</p>
+                      <p className="text-sm text-gray-500">
+                        {et.duration} min {et.requiresPayment && et.price ? `| ${et.currency || 'INR'} ${et.price}` : ''}
+                      </p>
                     </div>
                     <div className="h-3 w-3 rounded-full" style={{ backgroundColor: et.color }} />
                   </button>
@@ -292,6 +399,58 @@ export default function BookingPage() {
                   />
                 </div>
 
+                {/* Custom Booking Questions */}
+                {selectedEventType?.questions && selectedEventType.questions.map((q: any) => {
+                  let optionsList: string[] = [];
+                  if (q.type === 'select' && q.options) {
+                    try {
+                      optionsList = JSON.parse(q.options);
+                      if (!Array.isArray(optionsList)) {
+                        optionsList = String(q.options).split(',').map(o => o.trim());
+                      }
+                    } catch {
+                      optionsList = String(q.options).split(',').map(o => o.trim());
+                    }
+                  }
+
+                  return (
+                    <div key={q.id}>
+                      <label className="block text-sm font-medium text-gray-700">
+                        {q.label} {q.required && '*'}
+                      </label>
+                      {q.type === 'textarea' ? (
+                        <textarea
+                          required={q.required}
+                          value={answers[q.id] || ''}
+                          onChange={(e) => setAnswers({ ...answers, [q.id]: e.target.value })}
+                          rows={3}
+                          className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-black focus:outline-none focus:ring-1 focus:ring-black"
+                        />
+                      ) : q.type === 'select' ? (
+                        <select
+                          required={q.required}
+                          value={answers[q.id] || ''}
+                          onChange={(e) => setAnswers({ ...answers, [q.id]: e.target.value })}
+                          className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-black focus:outline-none focus:ring-1 focus:ring-black animate-none"
+                        >
+                          <option value="">Select an option</option>
+                          {optionsList.map((opt, idx) => (
+                            <option key={idx} value={opt}>{opt}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          type={q.type === 'email' ? 'email' : q.type === 'phone' ? 'tel' : 'text'}
+                          required={q.required}
+                          value={answers[q.id] || ''}
+                          onChange={(e) => setAnswers({ ...answers, [q.id]: e.target.value })}
+                          className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-black focus:outline-none focus:ring-1 focus:ring-black"
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+
                 <div className="flex gap-2">
                   <button
                     onClick={() => setStep('select')}
@@ -301,10 +460,15 @@ export default function BookingPage() {
                   </button>
                   <button
                     onClick={handleBooking}
-                    disabled={bookingLoading || !formData.guestName || !formData.guestEmail}
+                    disabled={
+                      bookingLoading ||
+                      !formData.guestName ||
+                      !formData.guestEmail ||
+                      (selectedEventType?.questions || []).some((q: any) => q.required && !answers[q.id])
+                    }
                     className="rounded-md bg-black px-4 py-2 text-sm text-white hover:bg-gray-800 disabled:opacity-50"
                   >
-                    {bookingLoading ? 'Confirming...' : 'Confirm Booking'}
+                    {bookingLoading ? 'Confirming...' : selectedEventType?.requiresPayment ? `Pay & Book (${selectedEventType.currency || 'INR'} ${selectedEventType.price})` : 'Confirm Booking'}
                   </button>
                 </div>
               </div>
@@ -315,3 +479,4 @@ export default function BookingPage() {
     </div>
   );
 }
+

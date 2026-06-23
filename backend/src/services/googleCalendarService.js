@@ -43,6 +43,7 @@ class GoogleCalendarService {
     const calendar = google.calendar({ version: 'v3', auth: this.oauth2Client });
     const res = await calendar.events.insert({
       calendarId: 'primary',
+      conferenceDataVersion: 1,
       requestBody: event
     });
     return res.data;

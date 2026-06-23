@@ -9,7 +9,15 @@ const calendarController = require('../controllers/calendarController');
 const eventTypeController = require('../controllers/eventTypeController');
 const availabilityController = require('../controllers/availabilityController');
 const bookingController = require('../controllers/bookingController');
+const teamController = require('../controllers/teamController');
+const integrationController = require('../controllers/integrationController');
+const webhookController = require('../controllers/webhookController');
+const analyticsController = require('../controllers/analyticsController');
+const paymentController = require('../controllers/paymentController');
+const aiController = require('../controllers/aiController');
 const { authenticate, optionalAuth } = require('../middleware/auth');
+
+router.get('/analytics', authenticate, analyticsController.getAnalytics);
 
 // Auth
 router.post('/auth/register', [
@@ -26,7 +34,16 @@ router.post('/auth/login', [
 router.get('/auth/me', authenticate, authController.getMe);
 
 // Google OAuth
-router.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
+router.get('/auth/google', passport.authenticate('google', { 
+  scope: [
+    'profile', 
+    'email', 
+    'https://www.googleapis.com/auth/calendar.readonly',
+    'https://www.googleapis.com/auth/calendar.events'
+  ],
+  accessType: 'offline',
+  prompt: 'consent'
+}));
 router.get('/auth/google/callback', (req, res, next) => {
   passport.authenticate('google', { 
     failureRedirect: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/login`, 
@@ -59,6 +76,9 @@ router.post('/event-types', authenticate, eventTypeController.createEventType);
 router.put('/event-types/:id', authenticate, eventTypeController.updateEventType);
 router.delete('/event-types/:id', authenticate, eventTypeController.deleteEventType);
 router.get('/event-types/:username/:slug/public', eventTypeController.getPublicEventType);
+router.post('/event-types/:eventTypeId/questions', authenticate, eventTypeController.createQuestion);
+router.put('/event-types/:eventTypeId/questions/:questionId', authenticate, eventTypeController.updateQuestion);
+router.delete('/event-types/:eventTypeId/questions/:questionId', authenticate, eventTypeController.deleteQuestion);
 
 // Availability
 router.get('/availability', authenticate, availabilityController.getAvailability);
@@ -70,5 +90,31 @@ router.get('/bookings', authenticate, bookingController.getBookings);
 router.post('/bookings/:username/:slug', bookingController.createBooking);
 router.put('/bookings/:id/cancel', authenticate, bookingController.cancelBooking);
 router.put('/bookings/:id/reschedule', authenticate, bookingController.rescheduleBooking);
+
+// Workspaces & Teams
+router.get('/workspaces', authenticate, teamController.getWorkspaces);
+router.post('/workspaces', authenticate, teamController.createWorkspace);
+router.get('/workspaces/:workspaceId/teams', authenticate, teamController.getTeams);
+router.post('/workspaces/:workspaceId/teams', authenticate, teamController.createTeam);
+router.get('/teams/:teamId/members', authenticate, teamController.getTeamMembers);
+router.post('/teams/:teamId/members', authenticate, teamController.addTeamMember);
+
+// Integrations
+router.get('/integrations', authenticate, integrationController.getIntegrations);
+router.post('/integrations', authenticate, integrationController.saveIntegration);
+router.delete('/integrations/:id', authenticate, integrationController.deleteIntegration);
+
+// Webhooks
+router.get('/webhooks', authenticate, webhookController.getWebhooks);
+router.post('/webhooks', authenticate, webhookController.createWebhook);
+router.delete('/webhooks/:id', authenticate, webhookController.deleteWebhook);
+
+// Payments
+router.post('/payments/create-order', paymentController.createOrder);
+router.post('/payments/verify', paymentController.verifyPayment);
+
+// AI Features
+router.post('/ai/suggest-slots', authenticate, aiController.suggestAvailability);
+router.post('/ai/summarize-meeting', authenticate, aiController.summarizeMeeting);
 
 module.exports = router;

@@ -84,6 +84,41 @@ exports.getAvailableSlots = async (req, res) => {
       new Date(b.startTime) < endOfDay
     );
 
+    // Fetch Google Calendar events for target date to prevent double bookings
+    const googleEvents = [];
+    try {
+      const { data: connectedCals } = await supabase
+        .from('calendars')
+        .select('*')
+        .eq('userId', user.id);
+
+      if (connectedCals && connectedCals.length > 0) {
+        const googleCalendarService = require('../services/googleCalendarService');
+        const timeMin = startOfDay.toISOString();
+        const timeMax = endOfDay.toISOString();
+        for (const cal of connectedCals) {
+          if (cal.provider === 'google' && cal.accessToken) {
+            try {
+              const events = await googleCalendarService.listEvents(
+                'primary',
+                cal.accessToken,
+                cal.refreshToken,
+                timeMin,
+                timeMax
+              );
+              if (events && events.length > 0) {
+                googleEvents.push(...events);
+              }
+            } catch (calErr) {
+              console.error('Google Calendar Sync Error during slot fetch:', calErr);
+            }
+          }
+        }
+      }
+    } catch (dbErr) {
+      console.error('Failed to lookup calendar connections:', dbErr);
+    }
+
     if (rules.length === 0) {
       return res.json({ slots: [] });
     }
@@ -113,14 +148,25 @@ exports.getAvailableSlots = async (req, res) => {
         const slotEnd = new Date(current.getTime() + duration * 60000);
         if (slotEnd > end) break;
 
-        // Check if overlaps with existing bookings
-        const isBooked = bookings.some(b => {
+        // Check if overlaps with database bookings
+        const isDbBooked = bookings.some(b => {
           const bStart = new Date(b.startTime);
           const bEnd = new Date(b.endTime);
           return (current >= bStart && current < bEnd) || (slotEnd > bStart && slotEnd <= bEnd);
         });
 
-        if (!isBooked) {
+        // Check if overlaps with Google Calendar events
+        const isGoogleBooked = googleEvents.some(event => {
+          const startStr = event.start?.dateTime || event.start?.date;
+          const endStr = event.end?.dateTime || event.end?.date;
+          if (!startStr || !endStr) return false;
+          
+          const eStart = new Date(startStr);
+          const eEnd = new Date(endStr);
+          return (current < eEnd && slotEnd > eStart);
+        });
+
+        if (!isDbBooked && !isGoogleBooked) {
           slots.push({
             startTime: current.toISOString(),
             endTime: slotEnd.toISOString()
