@@ -81,7 +81,7 @@ exports.getPublicProfile = async (req, res) => {
 
     const { data: profile, error } = await supabase
       .from('user_profiles')
-      .select('*, user:users(*, event_types(*), integrations(*))')
+      .select('*, user:users(*, event_types(*))')
       .eq('username', username)
       .maybeSingle();
 

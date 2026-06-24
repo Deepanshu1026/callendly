@@ -10,6 +10,8 @@ interface Booking {
   id: string;
   guestName: string;
   guestEmail: string;
+  guestPhone?: string;
+  guestNotes?: string;
   startTime: string;
   endTime: string;
   status: string;
@@ -37,6 +39,16 @@ export default function DashboardPage() {
   const [eventTypes, setEventTypes] = useState<EventType[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'upcoming' | 'past'>('upcoming');
+
+  // AI Prep Notes State
+  const [selectedBookingForAI, setSelectedBookingForAI] = useState<Booking | null>(null);
+  const [aiPrepLoading, setAiPrepLoading] = useState(false);
+  const [aiPrepResult, setAiPrepResult] = useState<{ summary: string; questions: string[] } | null>(null);
+
+  // AI Assistant Widget State
+  const [aiRequestText, setAiRequestText] = useState('');
+  const [aiSuggestLoading, setAiSuggestLoading] = useState(false);
+  const [aiSuggestResult, setAiSuggestResult] = useState<{ day: string; timeRange: string; purpose: string; suggestedResponse: string } | null>(null);
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -103,6 +115,40 @@ export default function DashboardPage() {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     router.push('/login');
+  };
+
+  const fetchAiPrep = async (booking: Booking) => {
+    setSelectedBookingForAI(booking);
+    setAiPrepLoading(true);
+    setAiPrepResult(null);
+    try {
+      const res = await api.post('/ai/summarize-meeting', {
+        guestName: booking.guestName,
+        guestNotes: booking.guestNotes || booking.guestEmail,
+        eventTitle: booking.eventType.title
+      });
+      setAiPrepResult(res.data);
+    } catch {
+      alert('Failed to generate AI prep notes.');
+    } finally {
+      setAiPrepLoading(false);
+    }
+  };
+
+  const handleAiSuggest = async () => {
+    if (!aiRequestText.trim()) return;
+    setAiSuggestLoading(true);
+    setAiSuggestResult(null);
+    try {
+      const res = await api.post('/ai/suggest-slots', {
+        requestText: aiRequestText
+      });
+      setAiSuggestResult(res.data);
+    } catch {
+      alert('Failed to parse request with AI.');
+    } finally {
+      setAiSuggestLoading(false);
+    }
   };
 
   if (loading) {
@@ -236,6 +282,15 @@ export default function DashboardPage() {
                         {activeTab === 'upcoming' && booking.status === 'confirmed' && (
                           <>
                             <button
+                              onClick={() => fetchAiPrep(booking)}
+                              className="rounded-md bg-purple-50 border border-purple-200 px-3 py-1.5 text-xs text-purple-700 hover:bg-purple-100 flex items-center gap-1"
+                            >
+                              <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                              </svg>
+                              Prep Notes
+                            </button>
+                            <button
                               onClick={() => handleReschedule(booking.id)}
                               className="rounded-md border border-gray-300 px-3 py-1.5 text-xs hover:bg-gray-50"
                             >
@@ -269,6 +324,65 @@ export default function DashboardPage() {
           </div>
 
           <div className="space-y-6">
+            {/* AI Scheduling Assistant */}
+            <div className="rounded-xl border border-gray-200 bg-white p-5 space-y-4 shadow-sm">
+              <div className="flex items-center gap-2">
+                <div className="h-5 w-5 bg-gradient-to-tr from-purple-500 to-indigo-500 rounded flex items-center justify-center text-white">
+                  <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                </div>
+                <h3 className="font-semibold text-gray-800">AI Scheduling Assistant</h3>
+              </div>
+              <p className="text-xs text-gray-500">Paste a client request message to extract details and generate a reply template.</p>
+              
+              <textarea
+                value={aiRequestText}
+                onChange={e => setAiRequestText(e.target.value)}
+                placeholder="e.g. Hi Deepanshu, can we meet this Friday morning to discuss the contract?"
+                rows={3}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-xs focus:border-black focus:outline-none"
+              />
+              
+              <button
+                onClick={handleAiSuggest}
+                disabled={aiSuggestLoading || !aiRequestText.trim()}
+                className="w-full rounded-md bg-black py-2 text-xs text-white hover:bg-gray-800 disabled:opacity-50"
+              >
+                {aiSuggestLoading ? 'Parsing with Sarvam AI...' : 'Generate Suggestion'}
+              </button>
+
+              {aiSuggestResult && (
+                <div className="bg-purple-50 rounded-lg p-3 border border-purple-100 space-y-2 text-xs">
+                  <div className="grid grid-cols-2 gap-2 text-gray-700">
+                    <div>
+                      <span className="font-bold block text-[10px] text-gray-400 uppercase">Extracted Day</span>
+                      {aiSuggestResult.day}
+                    </div>
+                    <div>
+                      <span className="font-bold block text-[10px] text-gray-400 uppercase">Time Range</span>
+                      {aiSuggestResult.timeRange}
+                    </div>
+                  </div>
+                  <div>
+                    <span className="font-bold block text-[10px] text-gray-400 uppercase">Purpose</span>
+                    {aiSuggestResult.purpose}
+                  </div>
+                  <div className="pt-2 border-t border-purple-100">
+                    <span className="font-bold block text-[10px] text-gray-400 uppercase mb-1">Suggested Reply</span>
+                    <textarea
+                      readOnly
+                      value={aiSuggestResult.suggestedResponse}
+                      onClick={e => (e.target as any).select()}
+                      className="w-full rounded border border-purple-200 bg-white p-2 text-gray-600 focus:outline-none"
+                      rows={4}
+                    />
+                    <p className="text-[10px] text-gray-400 mt-1">Click reply text to select and copy.</p>
+                  </div>
+                </div>
+              )}
+            </div>
+
             <div className="rounded-xl border border-gray-200 bg-white p-5">
               <h3 className="font-semibold">Event Types</h3>
               <div className="mt-4 space-y-3">
@@ -310,6 +424,65 @@ export default function DashboardPage() {
           </div>
         </div>
       </main>
+
+      {/* AI Prep Notes Drawer/Modal */}
+      {selectedBookingForAI && (
+        <div className="fixed inset-0 z-50 flex items-center justify-end bg-black bg-opacity-40">
+          <div className="h-full w-full max-w-md bg-white p-6 shadow-2xl overflow-y-auto space-y-6 flex flex-col justify-between">
+            <div className="space-y-6">
+              <div className="flex justify-between items-center border-b border-gray-100 pb-4">
+                <div>
+                  <h3 className="text-lg font-bold text-gray-800">AI Meeting Prep Notes</h3>
+                  <p className="text-xs text-gray-500">For {selectedBookingForAI.eventType.title} with {selectedBookingForAI.guestName}</p>
+                </div>
+                <button
+                  onClick={() => setSelectedBookingForAI(null)}
+                  className="rounded-full hover:bg-gray-100 p-2 text-gray-400 hover:text-black"
+                >
+                  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              {aiPrepLoading ? (
+                <div className="py-20 text-center space-y-3">
+                  <div className="inline-block animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-purple-500 animate-none" />
+                  <p className="text-sm text-gray-500">Consulting Sarvam AI for meeting insights...</p>
+                </div>
+              ) : aiPrepResult ? (
+                <div className="space-y-6">
+                  <div className="bg-purple-50 rounded-xl p-4 border border-purple-100 space-y-2">
+                    <h4 className="text-xs font-bold text-purple-700 uppercase tracking-wider">AI Summary & Strategy</h4>
+                    <p className="text-sm text-gray-700 leading-relaxed">{aiPrepResult.summary}</p>
+                  </div>
+
+                  <div className="space-y-3">
+                    <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Suggested Questions to Ask</h4>
+                    <div className="space-y-2.5">
+                      {aiPrepResult.questions.map((q, idx) => (
+                        <div key={idx} className="flex gap-3 items-start bg-gray-50 p-3 rounded-lg border border-gray-100">
+                          <span className="flex items-center justify-center bg-purple-500 text-white rounded-full h-5 w-5 text-xs font-bold shrink-0 mt-0.5">{idx + 1}</span>
+                          <p className="text-sm text-gray-700">{q}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-sm text-gray-500 italic">No notes generated.</p>
+              )}
+            </div>
+
+            <button
+              onClick={() => setSelectedBookingForAI(null)}
+              className="w-full py-2.5 rounded-lg bg-black text-white text-sm hover:bg-gray-800 mt-6"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
