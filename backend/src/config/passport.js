@@ -2,10 +2,12 @@ require('dotenv').config();
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const supabase = require('./database');
-const { generateToken } = require('../utils/jwt');
+const { generateToken, verifyToken } = require('../utils/jwt');
 
 if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
+  // 1. Default Google strategy for authentication (profile/email only)
   passport.use(
+    'google',
     new GoogleStrategy(
       {
         clientID: process.env.GOOGLE_CLIENT_ID,
@@ -176,14 +178,61 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
             throw new Error('User object was not created or loaded successfully');
           }
 
+          const token = generateToken({ userId: user.id, email: user.email });
+          console.log('Google OAuth: Successful login/registration, generating token...');
+          return done(null, { user, token });
+        } catch (error) {
+          console.error('Google OAuth Callback Strategy Exception:', error);
+          return done(error, false);
+        }
+      }
+    )
+  );
+
+  // 2. Google Calendar strategy for connecting calendars (requests calendar scopes)
+  passport.use(
+    'google-calendar',
+    new GoogleStrategy(
+      {
+        clientID: process.env.GOOGLE_CLIENT_ID,
+        clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+        callbackURL: process.env.GOOGLE_CALENDAR_REDIRECT_URI || 'http://localhost:5050/api/auth/google/calendar/callback',
+        passReqToCallback: true
+      },
+      async (req, accessToken, refreshToken, profile, done) => {
+        try {
+          const state = req.query.state;
+          if (!state) {
+            return done(new Error('State parameter with JWT token is missing'), false);
+          }
+
+          const decoded = verifyToken(state);
+          const userId = decoded.userId;
+          if (!userId) {
+            return done(new Error('Invalid token: user ID missing'), false);
+          }
+
+          console.log('Google Calendar OAuth callback for user:', userId);
+
+          // Fetch user to verify they exist
+          const { data: user, error: userError } = await supabase
+            .from('users')
+            .select('*')
+            .eq('id', userId)
+            .maybeSingle();
+
+          if (userError || !user) {
+            throw new Error('User not found');
+          }
+
           // Automatically connect/update Google Calendar credentials
           if (accessToken) {
-            console.log('Google OAuth: Upserting calendar connection for user:', user.id);
+            console.log('Google Calendar OAuth: Upserting calendar connection for user:', userId);
             try {
               const { data: existingCal } = await supabase
                 .from('calendars')
                 .select('id')
-                .eq('userId', user.id)
+                .eq('userId', userId)
                 .eq('provider', 'google')
                 .maybeSingle();
 
@@ -199,11 +248,11 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
                   .from('calendars')
                   .update(updateCalData)
                   .eq('id', existingCal.id);
-                console.log('Google OAuth: Updated existing calendar connection:', existingCal.id);
+                console.log('Google Calendar OAuth: Updated existing calendar connection:', existingCal.id);
               } else {
                 const insertCalData = {
                   id: require('crypto').randomUUID(),
-                  userId: user.id,
+                  userId,
                   provider: 'google',
                   name: 'Primary Google Calendar',
                   externalId: profile.id,
@@ -217,18 +266,16 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
                 await supabase
                   .from('calendars')
                   .insert(insertCalData);
-                console.log('Google OAuth: Created new calendar connection');
+                console.log('Google Calendar OAuth: Created new calendar connection');
               }
             } catch (calError) {
-              console.error('Google OAuth: Failed to connect/update calendar connection:', calError);
+              console.error('Google Calendar OAuth: Failed to connect/update calendar connection:', calError);
             }
           }
 
-          const token = generateToken({ userId: user.id, email: user.email });
-          console.log('Google OAuth: Successful login/registration, generating token...');
-          return done(null, { user, token });
+          return done(null, { user });
         } catch (error) {
-          console.error('Google OAuth Callback Strategy Exception:', error);
+          console.error('Google Calendar OAuth Callback Strategy Exception:', error);
           return done(error, false);
         }
       }

@@ -26,20 +26,14 @@ export default function CalendarsPage() {
     }).catch(() => setLoading(false));
   }, [router]);
 
-  const connectGoogle = async () => {
-    try {
-      const res = await api.post('/calendars', {
-        provider: 'google',
-        name: 'Primary Google Calendar (Simulated)',
-        externalId: `google-mock-${Date.now()}`,
-        accessToken: 'mock-access-token',
-        refreshToken: 'mock-refresh-token',
-        expiresAt: new Date(Date.now() + 3600 * 1000).toISOString()
-      });
-      setCalendars([...calendars, res.data.calendar]);
-    } catch (err) {
-      alert('Failed to connect Google Calendar');
+  const connectGoogle = () => {
+    const token = localStorage.getItem('token');
+    if (!token) {
+      alert('You must be logged in to connect a calendar.');
+      return;
     }
+    // Redirect to Google OAuth calendar flow, passing JWT token as state
+    window.location.href = `/api/auth/google/calendar?state=${token}`;
   };
 
   const connectOutlook = () => {

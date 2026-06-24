@@ -4,14 +4,15 @@ const nextConfig = {
     API_URL: process.env.API_URL || 'http://localhost:5050/api'
   },
   async rewrites() {
+    const backendUrl = process.env.BACKEND_URL || 'http://localhost:5050';
     return [
       {
         source: '/api/:path*',
-        destination: 'http://localhost:5050/api/:path*'
+        destination: `${backendUrl}/api/:path*`
       },
       {
         source: '/socket.io/:path*',
-        destination: 'http://localhost:5050/socket.io/:path*'
+        destination: `${backendUrl}/socket.io/:path*`
       }
     ];
   }

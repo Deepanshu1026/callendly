@@ -101,7 +101,7 @@ export default function LoginPage() {
         </div>
 
         <button
-          onClick={() => window.location.href = 'http://localhost:5050/api/auth/google'}
+          onClick={() => window.location.href = '/api/auth/google'}
           className="flex w-full items-center justify-center gap-2 rounded-md border border-gray-300 bg-white py-2.5 text-gray-700 hover:bg-gray-50"
         >
           <svg className="h-5 w-5" viewBox="0 0 24 24">

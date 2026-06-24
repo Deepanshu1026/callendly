@@ -33,13 +33,11 @@ router.post('/auth/login', [
 
 router.get('/auth/me', authenticate, authController.getMe);
 
-// Google OAuth
+// Google OAuth Login
 router.get('/auth/google', passport.authenticate('google', { 
   scope: [
     'profile', 
-    'email', 
-    'https://www.googleapis.com/auth/calendar.readonly',
-    'https://www.googleapis.com/auth/calendar.events'
+    'email'
   ],
   accessType: 'offline',
   prompt: 'consent'
@@ -57,6 +55,33 @@ router.get('/auth/google/callback', (req, res, next) => {
     }
     const token = user.token;
     res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback?token=${token}`);
+  })(req, res, next);
+});
+
+// Google Calendar Connection OAuth
+router.get('/auth/google/calendar', (req, res, next) => {
+  const state = req.query.state;
+  passport.authenticate('google-calendar', { 
+    scope: [
+      'profile', 
+      'email', 
+      'https://www.googleapis.com/auth/calendar.readonly',
+      'https://www.googleapis.com/auth/calendar.events'
+    ],
+    accessType: 'offline',
+    prompt: 'consent',
+    state: state
+  })(req, res, next);
+});
+router.get('/auth/google/calendar/callback', (req, res, next) => {
+  passport.authenticate('google-calendar', { 
+    failureRedirect: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/dashboard/calendars`, 
+    session: false 
+  }, (err, user, info) => {
+    if (err) {
+      return next(err);
+    }
+    res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/dashboard/calendars`);
   })(req, res, next);
 });
 
