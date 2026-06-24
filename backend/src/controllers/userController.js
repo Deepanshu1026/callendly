@@ -81,7 +81,7 @@ exports.getPublicProfile = async (req, res) => {
 
     const { data: profile, error } = await supabase
       .from('user_profiles')
-      .select('*, user:users(*, event_types(*))')
+      .select('*, user:users(*, event_types(*), availability_rules(*))')
       .eq('username', username)
       .maybeSingle();
 
@@ -136,7 +136,8 @@ exports.getPublicProfile = async (req, res) => {
         email: profile.user.email,
         avatar: profile.user.avatar,
         eventTypes: activeEventTypes,
-        integrations: profile.user.integrations || []
+        integrations: profile.user.integrations || [],
+        availabilityRules: (profile.user.availability_rules || []).filter(r => r.isActive && r.eventTypeId === null)
       };
     }
 

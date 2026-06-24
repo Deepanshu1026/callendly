@@ -203,6 +203,11 @@ exports.getPublicEventType = async (req, res) => {
       return res.status(404).json({ error: 'Event type not found' });
     }
 
+    const matchedEventTypes = (profile.user.event_types || []).filter(et => et.slug === slug && et.isActive);
+    if (matchedEventTypes.length === 0) {
+      return res.status(404).json({ error: 'Event type not found' });
+    }
+
     const eventType = matchedEventTypes[0];
     eventType.questions = (eventType.booking_questions || []).sort((a, b) => a.order - b.order);
     delete eventType.booking_questions;
