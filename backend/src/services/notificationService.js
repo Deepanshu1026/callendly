@@ -13,7 +13,7 @@ async function sendEmail({ to, subject, html, text }) {
   }
   try {
     const result = await resend.emails.send({
-      from: process.env.FROM_EMAIL || 'notifications@callendly.app',
+      from: process.env.FROM_EMAIL || 'notifications@newsadda.blog',
       to,
       subject,
       html,
