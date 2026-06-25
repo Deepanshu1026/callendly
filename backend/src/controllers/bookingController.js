@@ -1,6 +1,7 @@
 const supabase = require('../config/database');
 const { triggerWebhooks } = require('../utils/webhooks');
 const { logAudit } = require('../utils/audit');
+const { sendBookingNotification } = require('../services/notificationService');
 
 const parsePaymentConfig = (desc) => {
   if (!desc) return { cleanDescription: '', requiresPayment: false, price: 0, currency: 'INR' };
@@ -259,18 +260,15 @@ exports.createBooking = async (req, res) => {
       }
     }
 
-    // Create notification
-    await supabase
-      .from('notifications')
-      .insert({
-        id: require('crypto').randomUUID(),
+    try {
+      await sendBookingNotification({
         userId: hostId,
         bookingId: booking.id,
-        type: 'email',
-        channel: 'confirmation',
-        status: 'pending',
-        updatedAt: new Date().toISOString()
+        channel: 'confirmation'
       });
+    } catch (mailError) {
+      console.error('Booking confirmation email error:', mailError);
+    }
 
     // Emit real-time update to host
     if (req.io) {
@@ -320,17 +318,15 @@ exports.cancelBooking = async (req, res) => {
 
     if (updateError) throw updateError;
 
-    await supabase
-      .from('notifications')
-      .insert({
-        id: require('crypto').randomUUID(),
+    try {
+      await sendBookingNotification({
         userId: req.user.id,
         bookingId: booking.id,
-        type: 'email',
-        channel: 'cancellation',
-        status: 'pending',
-        updatedAt: new Date().toISOString()
+        channel: 'cancellation'
       });
+    } catch (mailError) {
+      console.error('Booking cancellation email error:', mailError);
+    }
 
     // Trigger webhook notification
     triggerWebhooks(req.user.id, 'booking.cancelled', updated);
@@ -375,17 +371,15 @@ exports.rescheduleBooking = async (req, res) => {
 
     if (updateError) throw updateError;
 
-    await supabase
-      .from('notifications')
-      .insert({
-        id: require('crypto').randomUUID(),
+    try {
+      await sendBookingNotification({
         userId: req.user.id,
         bookingId: booking.id,
-        type: 'email',
-        channel: 'reschedule',
-        status: 'pending',
-        updatedAt: new Date().toISOString()
+        channel: 'reschedule'
       });
+    } catch (mailError) {
+      console.error('Booking reschedule email error:', mailError);
+    }
 
     // Trigger webhook notification
     triggerWebhooks(req.user.id, 'booking.rescheduled', updated);
@@ -481,18 +475,15 @@ exports.confirmPaidBooking = async (bookingId, req) => {
       }
     }
 
-    // Create notification
-    await supabase
-      .from('notifications')
-      .insert({
-        id: require('crypto').randomUUID(),
+    try {
+      await sendBookingNotification({
         userId: hostId,
         bookingId: booking.id,
-        type: 'email',
-        channel: 'confirmation',
-        status: 'pending',
-        updatedAt: new Date().toISOString()
+        channel: 'confirmation'
       });
+    } catch (mailError) {
+      console.error('Paid booking confirmation email error:', mailError);
+    }
 
     // Emit real-time update
     if (req && req.io) {

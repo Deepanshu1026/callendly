@@ -3,6 +3,7 @@ const { validationResult } = require('express-validator');
 const { logAudit } = require('../utils/audit');
 const supabase = require('../config/database');
 const { generateToken } = require('../utils/jwt');
+const { sendLoginNotification } = require('../services/notificationService');
 
 exports.register = async (req, res) => {
   try {
@@ -129,6 +130,10 @@ exports.login = async (req, res) => {
     logAudit({ userId: user.id, action: 'user.login', entityType: 'users', entityId: user.id, req });
 
     const token = generateToken({ userId: user.id, email: user.email });
+
+    sendLoginNotification(user).catch((mailError) => {
+      console.error('Login notification email error:', mailError);
+    });
 
     res.json({
       token,
