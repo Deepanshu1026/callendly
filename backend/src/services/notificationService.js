@@ -15,6 +15,13 @@ function getSenderEmail() {
   );
 }
 
+function getEmailConfigSummary() {
+  return {
+    configured: Boolean(process.env.RESEND_API_KEY),
+    sender: getSenderEmail()
+  };
+}
+
 function formatDateTime(dateValue, timezone) {
   try {
     return new Intl.DateTimeFormat('en-US', {
@@ -34,13 +41,23 @@ async function sendEmail({ to, subject, html, text }) {
   }
 
   try {
-    return await resend.emails.send({
+    const result = await resend.emails.send({
       from: getSenderEmail(),
       to,
       subject,
       html,
       text
     });
+
+    if (result?.error) {
+      throw new Error(result.error.message || 'Resend returned an unknown email error');
+    }
+
+    if (result?.data?.id) {
+      console.log(`Email sent successfully: ${result.data.id} -> ${to}`);
+    }
+
+    return result;
   } catch (error) {
     console.error('Resend email error:', error);
     throw error;
@@ -246,5 +263,6 @@ module.exports = {
   sendLoginNotification,
   sendBookingNotification,
   queueBookingNotification,
-  processPendingNotifications
+  processPendingNotifications,
+  getEmailConfigSummary
 };

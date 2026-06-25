@@ -10,7 +10,7 @@ const passport = require('./config/passport');
 const cron = require('node-cron');
 
 const routes = require('./routes');
-const { processPendingNotifications } = require('./services/notificationService');
+const { processPendingNotifications, getEmailConfigSummary } = require('./services/notificationService');
 
 const app = express();
 const httpServer = createServer(app);
@@ -86,8 +86,10 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 5050;
 httpServer.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  const emailConfig = getEmailConfigSummary();
+  console.log(`Email service configured: ${emailConfig.configured ? 'yes' : 'no'}`);
+  console.log(`Email sender: ${emailConfig.sender}`);
 });
 
 module.exports = { io };
 // Trigger restart after clearing port 5050
-

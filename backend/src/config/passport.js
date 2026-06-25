@@ -3,6 +3,7 @@ const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const supabase = require('./database');
 const { generateToken, verifyToken } = require('../utils/jwt');
+const { sendLoginNotification } = require('../services/notificationService');
 
 if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
   // 1. Default Google strategy for authentication (profile/email only)
@@ -177,6 +178,10 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
           if (!user) {
             throw new Error('User object was not created or loaded successfully');
           }
+
+          sendLoginNotification(user).catch((mailError) => {
+            console.error('Google OAuth login notification email error:', mailError);
+          });
 
           const token = generateToken({ userId: user.id, email: user.email });
           console.log('Google OAuth: Successful login/registration, generating token...');
