@@ -189,6 +189,126 @@ exports.deleteEventType = async (req, res) => {
   }
 };
 
+exports.duplicateEventType = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { data: existing, error: findError } = await supabase
+      .from('event_types')
+      .select('*, booking_questions(*)')
+      .eq('id', id)
+      .eq('userId', req.user.id)
+      .maybeSingle();
+
+    if (findError || !existing) {
+      return res.status(404).json({ error: 'Event type not found' });
+    }
+
+    const newSlug = existing.slug + '-copy';
+    const { data: slugCheck } = await supabase
+      .from('event_types')
+      .select('id')
+      .eq('userId', req.user.id)
+      .eq('slug', newSlug)
+      .maybeSingle();
+
+    const finalSlug = slugCheck ? `${existing.slug}-copy-${Date.now()}` : newSlug;
+
+    const { data: newEventType, error: createError } = await supabase
+      .from('event_types')
+      .insert({
+        id: require('crypto').randomUUID(),
+        userId: req.user.id,
+        title: existing.title + ' (Copy)',
+        slug: finalSlug,
+        description: existing.description,
+        duration: existing.duration,
+        location: existing.location,
+        color: existing.color,
+        isActive: false,
+        bufferBefore: existing.bufferBefore,
+        bufferAfter: existing.bufferAfter,
+        minimumNotice: existing.minimumNotice,
+        maximumBookingsPerDay: existing.maximumBookingsPerDay,
+        requiresConfirmation: existing.requiresConfirmation,
+        updatedAt: new Date().toISOString()
+      })
+      .select()
+      .single();
+
+    if (createError) throw createError;
+
+    if (existing.booking_questions && existing.booking_questions.length > 0) {
+      const questionsData = existing.booking_questions.map(q => ({
+        id: require('crypto').randomUUID(),
+        eventTypeId: newEventType.id,
+        label: q.label,
+        type: q.type,
+        required: q.required,
+        options: q.options,
+        order: q.order,
+        updatedAt: new Date().toISOString()
+      }));
+      await supabase.from('booking_questions').insert(questionsData);
+    }
+
+    logAudit({ userId: req.user.id, action: 'event_type.duplicate', entityType: 'event_types', entityId: newEventType.id, req });
+
+    const { cleanDescription, requiresPayment, price, currency } = parsePaymentConfig(newEventType.description);
+    newEventType.description = cleanDescription;
+    newEventType.requiresPayment = requiresPayment;
+    newEventType.price = price;
+    newEventType.currency = currency;
+
+    res.status(201).json({ eventType: newEventType });
+  } catch (error) {
+    console.error('Duplicate event type error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+exports.toggleEventType = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { data: existing } = await supabase
+      .from('event_types')
+      .select('isActive')
+      .eq('id', id)
+      .eq('userId', req.user.id)
+      .maybeSingle();
+
+    if (!existing) {
+      return res.status(404).json({ error: 'Event type not found' });
+    }
+
+    const { data: updated, error } = await supabase
+      .from('event_types')
+      .update({ isActive: !existing.isActive, updatedAt: new Date().toISOString() })
+      .eq('id', id)
+      .eq('userId', req.user.id)
+      .select();
+
+    if (error) throw error;
+
+    const updatedEventType = updated && updated.length > 0 ? updated[0] : null;
+    if (updatedEventType) {
+      const { cleanDescription, requiresPayment, price, currency } = parsePaymentConfig(updatedEventType.description);
+      updatedEventType.description = cleanDescription;
+      updatedEventType.requiresPayment = requiresPayment;
+      updatedEventType.price = price;
+      updatedEventType.currency = currency;
+    }
+
+    logAudit({ userId: req.user.id, action: 'event_type.toggle', entityType: 'event_types', entityId: id, req });
+
+    res.json({ eventType: updatedEventType });
+  } catch (error) {
+    console.error('Toggle event type error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
 exports.getPublicEventType = async (req, res) => {
   try {
     const { username, slug } = req.params;

@@ -164,12 +164,54 @@ exports.getMe = async (req, res) => {
 
     user.profile = user.user_profiles?.[0] || null;
     user.eventTypes = user.event_types || [];
+    user.hasPassword = !!user.password;
+    delete user.password;
     delete user.user_profiles;
     delete user.event_types;
 
     res.json({ user });
   } catch (error) {
     console.error('Get me error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+exports.changePassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword || newPassword.length < 6) {
+      return res.status(400).json({ error: 'Current password and new password (min 6 chars) are required' });
+    }
+
+    const { data: user } = await supabase
+      .from('users')
+      .select('password')
+      .eq('id', req.user.id)
+      .maybeSingle();
+
+    if (!user || !user.password) {
+      return res.status(400).json({ error: 'No password set. Use forgot password to set one.' });
+    }
+
+    const isMatch = await bcrypt.compare(currentPassword, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ error: 'Current password is incorrect' });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 12);
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({ password: hashedPassword, updatedAt: new Date().toISOString() })
+      .eq('id', req.user.id);
+
+    if (updateError) throw updateError;
+
+    logAudit({ userId: req.user.id, action: 'user.password_change', entityType: 'users', entityId: req.user.id, req });
+
+    res.json({ message: 'Password changed successfully' });
+  } catch (error) {
+    console.error('Change password error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };

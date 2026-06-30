@@ -1,7 +1,9 @@
 const supabase = require('../config/database');
 const { triggerWebhooks } = require('../utils/webhooks');
 const { logAudit } = require('../utils/audit');
-const { sendBookingNotification } = require('../services/notificationService');
+const { sendBookingNotification, sendEmail } = require('../services/notificationService');
+const { generateICS } = require('../utils/icsGenerator');
+const { generateToken } = require('../utils/jwt');
 
 const parsePaymentConfig = (desc) => {
   if (!desc) return { cleanDescription: '', requiresPayment: false, price: 0, currency: 'INR' };
@@ -142,9 +144,31 @@ exports.createBooking = async (req, res) => {
       }
     }
 
+    // Check maximum bookings per day
+    if (eventType.maximumBookingsPerDay > 0) {
+      const dayStart = new Date(parsedStartTime);
+      dayStart.setUTCHours(0, 0, 0, 0);
+      const dayEnd = new Date(dayStart);
+      dayEnd.setUTCHours(23, 59, 59, 999);
+      const dayBookings = (user.bookings || []).filter(b =>
+        b.eventTypeId === eventType.id &&
+        b.status !== 'cancelled' &&
+        new Date(b.startTime) >= dayStart &&
+        new Date(b.startTime) <= dayEnd
+      );
+      if (dayBookings.length >= eventType.maximumBookingsPerDay) {
+        return res.status(400).json({ error: `Maximum bookings for this event type reached for this date` });
+      }
+    }
+
     // Parse payment config from description
     const { requiresPayment, price, currency } = parsePaymentConfig(eventType.description);
-    const initialStatus = requiresPayment ? 'pending' : 'confirmed';
+    let initialStatus = 'confirmed';
+    if (requiresPayment) {
+      initialStatus = 'pending';
+    } else if (eventType.requiresConfirmation) {
+      initialStatus = 'pending';
+    }
 
     const { data: booking, error: insertError } = await supabase
       .from('bookings')
@@ -192,6 +216,28 @@ exports.createBooking = async (req, res) => {
         price,
         currency
       });
+    }
+
+    // If it requires confirmation, return early - host must approve
+    if (eventType.requiresConfirmation && !requiresPayment) {
+      try {
+        await sendBookingNotification({
+          userId: hostId,
+          bookingId: booking.id,
+          channel: 'pending'
+        });
+      } catch (mailError) {
+        console.error('Booking pending confirmation email error:', mailError);
+      }
+
+      if (req.io) {
+        req.io.to(`user_${hostId}`).emit('booking_pending', booking);
+      }
+
+      triggerWebhooks(hostId, 'booking.pending', booking);
+      logAudit({ userId: hostId, action: 'booking.create_pending', entityType: 'bookings', entityId: booking.id, req });
+
+      return res.status(201).json({ booking, requiresConfirmation: true });
     }
 
     // Sync with Google Calendar and create Google Meet link if connected (for free bookings)
@@ -500,5 +546,342 @@ exports.confirmPaidBooking = async (bookingId, req) => {
   } catch (err) {
     console.error('Error confirming paid booking:', err);
     return null;
+  }
+};
+
+exports.approveBooking = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { data: booking } = await supabase
+      .from('bookings')
+      .select('*, eventType:event_types(*)')
+      .eq('id', id)
+      .eq('userId', req.user.id)
+      .maybeSingle();
+
+    if (!booking) {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+
+    if (booking.status !== 'pending') {
+      return res.status(400).json({ error: 'Only pending bookings can be approved' });
+    }
+
+    let hangoutLink = null;
+    try {
+      const { data: connectedCals } = await supabase
+        .from('calendars')
+        .select('*')
+        .eq('userId', req.user.id);
+
+      if (connectedCals && connectedCals.length > 0) {
+        const googleCalendarService = require('../services/googleCalendarService');
+        for (const cal of connectedCals) {
+          if (cal.provider === 'google' && cal.accessToken) {
+            try {
+              const eventPayload = {
+                summary: `${booking.eventType.title} with ${booking.guestName}`,
+                description: booking.guestNotes || `Scheduled via Callendly. Guest Email: ${booking.guestEmail}`,
+                start: { dateTime: booking.startTime },
+                end: { dateTime: booking.endTime },
+                attendees: [{ email: booking.guestEmail, displayName: booking.guestName }]
+              };
+
+              if (booking.eventType.location === 'Google Meet') {
+                eventPayload.conferenceData = {
+                  createRequest: {
+                    requestId: require('crypto').randomUUID(),
+                    conferenceSolutionKey: { type: 'hangoutsMeet' }
+                  }
+                };
+              }
+
+              const createdEvent = await googleCalendarService.createEvent('primary', cal.accessToken, cal.refreshToken, eventPayload);
+              if (createdEvent && createdEvent.hangoutLink) {
+                hangoutLink = createdEvent.hangoutLink;
+              }
+            } catch (calErr) {
+              console.error('Google Calendar approve event error:', calErr);
+            }
+          }
+        }
+      }
+    } catch (dbErr) {
+      console.error('Failed to lookup calendars during approval:', dbErr);
+    }
+
+    const updateData = { status: 'confirmed', updatedAt: new Date().toISOString() };
+    if (hangoutLink) updateData.location = hangoutLink;
+
+    const { data: updated, error } = await supabase
+      .from('bookings')
+      .update(updateData)
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    try {
+      await sendBookingNotification({ userId: req.user.id, bookingId: booking.id, channel: 'confirmation' });
+    } catch (mailError) {
+      console.error('Booking approval email error:', mailError);
+    }
+
+    if (req.io) {
+      req.io.to(`user_${req.user.id}`).emit('booking_updated', updated);
+    }
+
+    triggerWebhooks(req.user.id, 'booking.approved', updated);
+    logAudit({ userId: req.user.id, action: 'booking.approve', entityType: 'bookings', entityId: id, req });
+
+    res.json({ booking: updated });
+  } catch (error) {
+    console.error('Approve booking error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+exports.declineBooking = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+
+    const { data: booking } = await supabase
+      .from('bookings')
+      .select('*')
+      .eq('id', id)
+      .eq('userId', req.user.id)
+      .maybeSingle();
+
+    if (!booking) {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+
+    if (booking.status !== 'pending') {
+      return res.status(400).json({ error: 'Only pending bookings can be declined' });
+    }
+
+    const { data: updated, error } = await supabase
+      .from('bookings')
+      .update({
+        status: 'cancelled',
+        cancelledAt: new Date().toISOString(),
+        cancellationReason: reason || 'Declined by host',
+        updatedAt: new Date().toISOString()
+      })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    try {
+      await sendBookingNotification({ userId: req.user.id, bookingId: booking.id, channel: 'cancellation' });
+    } catch (mailError) {
+      console.error('Booking decline email error:', mailError);
+    }
+
+    if (req.io) {
+      req.io.to(`user_${req.user.id}`).emit('booking_updated', updated);
+    }
+
+    triggerWebhooks(req.user.id, 'booking.declined', updated);
+    logAudit({ userId: req.user.id, action: 'booking.decline', entityType: 'bookings', entityId: id, req });
+
+    res.json({ booking: updated });
+  } catch (error) {
+    console.error('Decline booking error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+exports.guestCancelBooking = async (req, res) => {
+  try {
+    const { token } = req.params;
+
+    const decoded = require('../utils/jwt').verifyToken(token);
+    if (!decoded || decoded.purpose !== 'guest_cancel' || !decoded.bookingId) {
+      return res.status(400).json({ error: 'Invalid or expired link' });
+    }
+
+    const { data: booking } = await supabase
+      .from('bookings')
+      .select('*')
+      .eq('id', decoded.bookingId)
+      .maybeSingle();
+
+    if (!booking) {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+
+    if (booking.status !== 'confirmed') {
+      return res.status(400).json({ error: 'Booking cannot be cancelled' });
+    }
+
+    const { data: updated, error } = await supabase
+      .from('bookings')
+      .update({
+        status: 'cancelled',
+        cancelledAt: new Date().toISOString(),
+        cancellationReason: 'Cancelled by guest',
+        updatedAt: new Date().toISOString()
+      })
+      .eq('id', decoded.bookingId)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    try {
+      await sendBookingNotification({ userId: booking.userId, bookingId: booking.id, channel: 'cancellation' });
+    } catch (mailError) {
+      console.error('Guest cancellation email error:', mailError);
+    }
+
+    res.json({ booking: updated, message: 'Booking cancelled successfully' });
+  } catch (error) {
+    console.error('Guest cancel booking error:', error);
+    res.status(400).json({ error: 'Invalid or expired cancellation link' });
+  }
+};
+
+exports.guestRescheduleBooking = async (req, res) => {
+  try {
+    const { token } = req.params;
+    const { newStartTime, newEndTime } = req.body;
+
+    const decoded = require('../utils/jwt').verifyToken(token);
+    if (!decoded || decoded.purpose !== 'guest_reschedule' || !decoded.bookingId) {
+      return res.status(400).json({ error: 'Invalid or expired link' });
+    }
+
+    const { data: booking } = await supabase
+      .from('bookings')
+      .select('*')
+      .eq('id', decoded.bookingId)
+      .maybeSingle();
+
+    if (!booking) {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+
+    if (booking.status !== 'confirmed') {
+      return res.status(400).json({ error: 'Booking cannot be rescheduled' });
+    }
+
+    const { data: updated, error } = await supabase
+      .from('bookings')
+      .update({
+        startTime: new Date(newStartTime).toISOString(),
+        endTime: new Date(newEndTime).toISOString(),
+        status: 'rescheduled',
+        updatedAt: new Date().toISOString()
+      })
+      .eq('id', decoded.bookingId)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    try {
+      await sendBookingNotification({ userId: booking.userId, bookingId: booking.id, channel: 'reschedule' });
+    } catch (mailError) {
+      console.error('Guest reschedule email error:', mailError);
+    }
+
+    res.json({ booking: updated, message: 'Booking rescheduled successfully' });
+  } catch (error) {
+    console.error('Guest reschedule booking error:', error);
+    res.status(400).json({ error: 'Invalid or expired reschedule link' });
+  }
+};
+
+exports.downloadICS = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    let booking;
+    if (req.user) {
+      const { data } = await supabase
+        .from('bookings')
+        .select('*, eventType:event_types(*)')
+        .eq('id', id)
+        .eq('userId', req.user.id)
+        .maybeSingle();
+      booking = data;
+    } else {
+      const { data } = await supabase
+        .from('bookings')
+        .select('*, eventType:event_types(*)')
+        .eq('id', id)
+        .maybeSingle();
+      booking = data;
+    }
+
+    if (!booking) {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+
+    const { data: host } = await supabase
+      .from('users')
+      .select('email, name')
+      .eq('id', booking.userId)
+      .maybeSingle();
+
+    const icsContent = generateICS({
+      title: booking.eventType?.title || 'Meeting',
+      description: booking.guestNotes || '',
+      startTime: booking.startTime,
+      endTime: booking.endTime,
+      location: booking.location,
+      organizerName: host?.name || '',
+      organizerEmail: host?.email || '',
+      attendeeName: booking.guestName,
+      attendeeEmail: booking.guestEmail,
+      timezone: booking.timezone,
+      uid: booking.id
+    });
+
+    res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="callendly-booking-${booking.id}.ics"`);
+    res.send(icsContent);
+  } catch (error) {
+    console.error('Download ICS error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+exports.markNoShow = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { data: booking } = await supabase
+      .from('bookings')
+      .select('*')
+      .eq('id', id)
+      .eq('userId', req.user.id)
+      .maybeSingle();
+
+    if (!booking) {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+
+    const { data: updated, error } = await supabase
+      .from('bookings')
+      .update({ status: 'no-show', updatedAt: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    logAudit({ userId: req.user.id, action: 'booking.no_show', entityType: 'bookings', entityId: id, req });
+
+    res.json({ booking: updated });
+  } catch (error) {
+    console.error('Mark no-show error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 };

@@ -85,6 +85,8 @@ export default function BookingPage() {
   });
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [bookingLoading, setBookingLoading] = useState(false);
+  const [lastBookingId, setLastBookingId] = useState<string>('');
+  const [pendingConfirmation, setPendingConfirmation] = useState(false);
 
   // Load Razorpay script dynamically
   useEffect(() => {
@@ -203,7 +205,15 @@ export default function BookingPage() {
         answers
       });
 
-      const { booking, requiresPayment, price, currency } = res.data;
+      const { booking, requiresPayment, requiresConfirmation, price, currency } = res.data;
+      setLastBookingId(booking.id);
+
+      if (requiresConfirmation) {
+        setPendingConfirmation(true);
+        setStep('confirmed');
+        setBookingLoading(false);
+        return;
+      }
 
       if (requiresPayment) {
         // 2. Create Razorpay order
@@ -306,33 +316,38 @@ export default function BookingPage() {
   const leadingDays = firstDayIndex === 0 ? 6 : firstDayIndex - 1;
 
   if (step === 'confirmed') {
+    const isPending = pendingConfirmation;
+
     return (
       <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4 py-12">
         <div className="w-full max-w-lg rounded-2xl bg-white p-8 md:p-10 text-center shadow-xl border border-gray-100 relative overflow-hidden">
           
-          {/* Confirmed Banner Ribbon */}
+          {/* Banner Ribbon */}
           <div className="absolute top-0 right-0 overflow-hidden w-24 h-24 pointer-events-none">
-            <div className="absolute top-3 right-[-28px] transform rotate-45 bg-green-600 text-[8px] font-bold text-white py-1 px-8 shadow-sm tracking-wider uppercase whitespace-nowrap text-center">
-              Confirmed
+            <div className={`absolute top-3 right-[-28px] transform rotate-45 text-[8px] font-bold text-white py-1 px-8 shadow-sm tracking-wider uppercase whitespace-nowrap text-center ${isPending ? 'bg-amber-500' : 'bg-green-600'}`}>
+              {isPending ? 'Pending' : 'Confirmed'}
             </div>
           </div>
 
-          <div className="mx-auto mb-6 flex h-14 w-14 items-center justify-center rounded-full bg-green-50 text-green-500">
+          <div className={`mx-auto mb-6 flex h-14 w-14 items-center justify-center rounded-full ${isPending ? 'bg-amber-50 text-amber-500' : 'bg-green-50 text-green-500'}`}>
             <CheckCircle2 className="h-8 w-8 stroke-[2]" />
           </div>
           
-          <h2 className="text-2xl font-black text-gray-900 tracking-tight">Booking Confirmed!</h2>
+          <h2 className="text-2xl font-black text-gray-900 tracking-tight">
+            {isPending ? 'Booking Request Sent!' : 'Booking Confirmed!'}
+          </h2>
           <p className="mt-3 text-sm text-gray-500 font-medium">
-            You are scheduled with <span className="font-semibold text-gray-800">{host?.name || username}</span>.
+            {isPending
+              ? 'Your booking request has been sent to '
+              : 'You are scheduled with ' }
+            <span className="font-semibold text-gray-800">{host?.name || username}</span>.
           </p>
 
           <div className="mt-8 border-t border-b border-gray-100 py-6 text-left space-y-4">
             <div className="flex items-start gap-3">
               <Calendar className="h-5 w-5 text-blue-600 shrink-0 mt-0.5" />
               <div>
-                <p className="text-sm font-bold text-gray-800">
-                  {selectedEventType?.title}
-                </p>
+                <p className="text-sm font-bold text-gray-800">{selectedEventType?.title}</p>
                 {selectedSlot && (
                   <p className="mt-0.5 text-xs text-gray-500 font-semibold">
                     {format(parseISO(selectedSlot.startTime), 'h:mm a')} - {format(parseISO(selectedSlot.endTime), 'h:mm a')}, {format(parseISO(selectedSlot.startTime), 'EEEE, MMMM d, yyyy')}
@@ -353,13 +368,26 @@ export default function BookingPage() {
           </div>
 
           <p className="mt-6 text-xs text-gray-400 font-medium">
-            A confirmation email has been sent to <span className="font-semibold text-gray-600">{formData.guestEmail}</span>.
+            {isPending
+              ? 'A confirmation email will be sent once the host approves your request.'
+              : 'A confirmation email has been sent to '}
+            {!isPending && <span className="font-semibold text-gray-600">{formData.guestEmail}</span>}.
           </p>
           
-          <div className="mt-8">
+          <div className="mt-6 flex flex-col sm:flex-row gap-3">
+            {!isPending && (
+              <a
+                href={`/api/bookings/${lastBookingId}/ics`}
+                download
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-green-600 hover:bg-green-700 text-white px-6 py-3 text-sm font-bold transition-all shadow-md"
+              >
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                Add to Calendar
+              </a>
+            )}
             <Link 
               href="/"
-              className="inline-block rounded-xl bg-gray-900 hover:bg-black text-white px-6 py-3 text-sm font-bold transition-all duration-200 shadow-md shadow-gray-200 hover:scale-105"
+              className="inline-block rounded-xl bg-gray-900 hover:bg-black text-white px-6 py-3 text-sm font-bold transition-all shadow-md"
             >
               Close
             </Link>

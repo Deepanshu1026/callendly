@@ -326,3 +326,28 @@ model AuditLog {
 
   @@map("audit_logs")
 }
+
+model PasswordResetToken {
+  id            String   @id @default(cuid())
+  userId        String
+  token         String   @unique
+  expiresAt     DateTime
+  used          Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  @@map("password_reset_tokens")
+}
+
+model DateOverride {
+  id            String   @id @default(cuid())
+  userId        String
+  date          String   // YYYY-MM-DD
+  startTime     String   // HH:mm
+  endTime       String   // HH:mm
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([userId, date])
+  @@map("date_overrides")
+}

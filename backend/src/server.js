@@ -10,7 +10,7 @@ const passport = require('./config/passport');
 const cron = require('node-cron');
 
 const routes = require('./routes');
-const { processPendingNotifications, getEmailConfigSummary } = require('./services/notificationService');
+const { processPendingNotifications, sendBookingReminders, getEmailConfigSummary } = require('./services/notificationService');
 
 const app = express();
 const httpServer = createServer(app);
@@ -55,6 +55,16 @@ if (process.env.NODE_ENV !== 'test') {
       await processPendingNotifications();
     } catch (err) {
       console.error('Notification cron error:', err);
+    }
+  });
+
+  // Cron job: send booking reminders every 30 minutes
+  cron.schedule('*/30 * * * *', async () => {
+    console.log('Sending booking reminders...');
+    try {
+      await sendBookingReminders();
+    } catch (err) {
+      console.error('Reminder cron error:', err);
     }
   });
 }
